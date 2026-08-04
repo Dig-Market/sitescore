@@ -1,10 +1,14 @@
-# SiteScore — SEO + AEO Audit Tool
+# SiteScore — Full-Site SEO + AEO + GEO + Technical Audit Tool
 
-A web tool that scores any website on two things:
+A web tool that crawls an entire website (not just one page) and scores it on four things:
 1. **SEO Score** — traditional on-page SEO (title tags, meta descriptions, headings, alt text, etc.)
 2. **AEO Score** — AI Answer Engine Optimization: how ready the page is to be cited by ChatGPT, Perplexity, and Google AI Overviews.
+3. **GEO Score** — Generative Engine Optimization: whether AI crawlers can actually access and parse the content (semantic HTML, robots.txt access for AI bots, content-to-code ratio).
+4. **Technical Score** — mobile-friendliness, page weight, server response time, robots.txt, XML sitemap, duplicate titles/meta descriptions across pages.
 
-Enter a URL, get an instant on-screen score breakdown, and download a branded client-ready PDF report.
+Enter a homepage URL, the tool discovers and crawls internal pages automatically (up to a configurable limit), scores every page, flags site-wide issues (like duplicate titles across pages), and generates a branded client-ready PDF report.
+
+**Not included:** off-page/backlink analysis. That requires a paid data source (Ahrefs/SEMrush/Moz API) since backlink data isn't present on the website itself — see "Adding backlink data" below if you want to wire this in later.
 
 ---
 
@@ -83,9 +87,20 @@ Let me know when you want this piece built.
 
 ---
 
+## Adding backlink data (Semrush/Ahrefs/Moz)
+
+Off-page scoring needs a paid API key from **your own** Semrush/Ahrefs/Moz account (not a shared/reseller login — those don't expose API access). Once you have one:
+
+1. Get your API key from your account's API dashboard (e.g. Semrush: Profile → API Access).
+2. Add a new method to `analyzer.py`, e.g. `SiteCrawler.fetch_backlink_data()`, that calls the relevant API endpoint with your key.
+3. Add the returned metrics (referring domains, toxic backlink %, domain authority, etc.) as a new `off_page_checks` list, scored the same way as the other check lists.
+4. Add it to the aggregate score in `crawl()` and to the PDF report in `report_generator.py`.
+
+Keep the API key out of the code — store it as an environment variable (`SEMRUSH_API_KEY`) and read it with `os environ.get(...)`, then set it in Render under Environment → Environment Variables.
+
 ## Extending the scoring engine
 
-All scoring logic lives in `analyzer.py` inside two methods: `run_seo_checks()` and `run_aeo_checks()`. Each check is a small method that returns:
+All scoring logic lives in `analyzer.py` inside four methods: `run_seo_checks()`, `run_aeo_checks()`, `run_geo_checks()`, and `run_technical_page_checks()`. Site-wide checks (robots.txt, sitemap, duplicate titles) live in the `SiteCrawler` class. Each check is a small method that returns:
 
 ```python
 {

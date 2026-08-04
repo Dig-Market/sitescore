@@ -6,8 +6,8 @@ import os
 import uuid
 from flask import Flask, render_template, request, send_file, jsonify
 
-from analyzer import SiteAnalyzer
-from report_generator import generate_report
+from analyzer import SiteCrawler
+from report_generator import generate_site_report
 
 app = Flask(__name__)
 REPORTS_DIR = os.path.join(os.path.dirname(__file__), 'reports')
@@ -24,20 +24,29 @@ def analyze():
     url = request.form.get('url', '').strip()
     agency_name = request.form.get('agency_name', 'Dig Market').strip() or 'Dig Market'
     client_name = request.form.get('client_name', '').strip()
+    try:
+        max_pages = int(request.form.get('max_pages', 15))
+    except ValueError:
+        max_pages = 15
+    max_pages = max(1, min(max_pages, 30))  # hard cap to keep request times reasonable
 
     if not url:
         return jsonify({'error': 'Please enter a URL'}), 400
 
-    analyzer = SiteAnalyzer(url)
-    result = analyzer.analyze()
+    crawler = SiteCrawler(url, max_pages=max_pages)
+    result = crawler.crawl()
 
-    if 'error' in result:
+    if result.get('error'):
         return jsonify({'error': f"Couldn't load that site: {result['error']}"}), 400
 
     # Generate PDF
     filename = f"sitescore_{uuid.uuid4().hex[:8]}.pdf"
     filepath = os.path.join(REPORTS_DIR, filename)
-    generate_report(result, filepath, agency_name=agency_name, client_name=client_name or None)
+    generate_site_report(result, filepath, agency_name=agency_name, client_name=client_name or None)
+
+    # Trim internal_links sets (not JSON serializable / not needed by frontend)
+    for p in result['pages']:
+        p.pop('internal_links', None)
 
     result['pdf_filename'] = filename
     return jsonify(result)

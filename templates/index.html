@@ -141,7 +141,7 @@
   }
   .scorebar {
     display: grid;
-    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-columns: repeat(5, 1fr);
     background: #fff;
     border: 1px solid #e4e2d8;
     border-radius: 10px;
@@ -149,17 +149,35 @@
     margin-bottom: 20px;
   }
   .scorecell {
-    padding: 24px 12px;
+    padding: 20px 8px;
     text-align: center;
     border-right: 1px solid #e4e2d8;
   }
   .scorecell:last-child { border-right: none; }
   .scorecell .num {
     font-family: 'Space Grotesk', sans-serif;
-    font-size: 40px;
+    font-size: 32px;
     font-weight: 700;
     line-height: 1;
   }
+  @media (max-width: 640px) {
+    .scorebar { grid-template-columns: repeat(3, 1fr); }
+    .scorecell:nth-child(3) { border-right: none; }
+  }
+  .pagetable {
+    width: 100%;
+    border-collapse: collapse;
+    background: #fff;
+    font-size: 13px;
+  }
+  .pagetable th, .pagetable td {
+    padding: 10px 12px;
+    text-align: left;
+    border-bottom: 1px solid #eeede5;
+  }
+  .pagetable th { background: var(--panel); color: #fff; font-family: 'IBM Plex Mono', monospace; font-size: 11px; text-transform: uppercase; }
+  .pagetable td.num { text-align: center; font-family: 'IBM Plex Mono', monospace; }
+  .pagetable td.url { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .scorecell .lbl {
     font-family: 'IBM Plex Mono', monospace;
     font-size: 10px;
@@ -237,7 +255,7 @@
 
 <div class="hero">
   <h1>How visible is your site to <span>Google and AI</span>?</h1>
-  <p>Run a live audit against on-page SEO fundamentals and AI answer-engine readiness. Get a client-ready PDF in seconds.</p>
+  <p>Crawls your whole site and scores SEO, AEO, GEO, and technical health page-by-page. Get a client-ready PDF report.</p>
 </div>
 
 <div class="panel">
@@ -256,7 +274,11 @@
         <input type="text" id="client_name" name="client_name" placeholder="e.g. Smiths Blade">
       </div>
     </div>
-    <button type="submit" class="btn" id="submitBtn">Run Audit</button>
+    <div class="field">
+      <label for="max_pages">Pages to Crawl (max 30)</label>
+      <input type="number" id="max_pages" name="max_pages" value="15" min="1" max="30">
+    </div>
+    <button type="submit" class="btn" id="submitBtn">Run Full Site Audit</button>
   </form>
 </div>
 
@@ -281,10 +303,10 @@ function scoreClass(score) {
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
   statusEl.className = 'status';
-  statusEl.textContent = 'Fetching page and running checks...';
+  statusEl.textContent = 'Crawling site and running checks — this can take a minute for multiple pages...';
   resultsEl.style.display = 'none';
   submitBtn.disabled = true;
-  submitBtn.textContent = 'Scanning...';
+  submitBtn.textContent = 'Scanning site...';
 
   const formData = new FormData(form);
   try {
@@ -304,7 +326,7 @@ form.addEventListener('submit', async (e) => {
     statusEl.textContent = 'Network error — please try again.';
   } finally {
     submitBtn.disabled = false;
-    submitBtn.textContent = 'Run Audit';
+    submitBtn.textContent = 'Run Full Site Audit';
   }
 });
 
@@ -330,13 +352,42 @@ function renderResults(data) {
   let html = `
     <div class="scorebar">
       <div class="scorecell"><div class="num ${scoreClass(data.overall_score)}">${data.overall_score}</div><div class="lbl">Overall</div></div>
-      <div class="scorecell"><div class="num ${scoreClass(data.seo_score)}">${data.seo_score}</div><div class="lbl">SEO Score</div></div>
-      <div class="scorecell"><div class="num ${scoreClass(data.aeo_score)}">${data.aeo_score}</div><div class="lbl">AEO Score</div></div>
+      <div class="scorecell"><div class="num ${scoreClass(data.seo_score)}">${data.seo_score}</div><div class="lbl">SEO</div></div>
+      <div class="scorecell"><div class="num ${scoreClass(data.aeo_score)}">${data.aeo_score}</div><div class="lbl">AEO</div></div>
+      <div class="scorecell"><div class="num ${scoreClass(data.geo_score)}">${data.geo_score}</div><div class="lbl">GEO</div></div>
+      <div class="scorecell"><div class="num ${scoreClass(data.tech_score)}">${data.tech_score}</div><div class="lbl">Technical</div></div>
     </div>
-    <a href="/download/${data.pdf_filename}" class="download-btn">Download PDF Report</a>
+    <a href="/download/${data.pdf_filename}" class="download-btn">Download Full PDF Report (${data.pages_crawled} pages)</a>
   `;
-  html += renderChecklist('On-Page SEO', data.seo_checks);
-  html += renderChecklist('AI Search Visibility (AEO)', data.aeo_checks);
+
+  html += renderChecklist('Site-Wide Technical Checks', data.site_technical_checks);
+  html += renderChecklist('Cross-Page Issues', data.site_wide_issues);
+
+  // Per-page table
+  html += `<div class="checklist"><h3>Per-Page Scores (${data.pages.length} pages crawled)</h3>
+    <div style="overflow-x:auto;">
+    <table class="pagetable">
+      <thead><tr><th>Page</th><th>SEO</th><th>AEO</th><th>GEO</th><th>Tech</th></tr></thead>
+      <tbody>`;
+  data.pages.forEach(p => {
+    html += `<tr>
+      <td class="url" title="${p.url}">${p.url}</td>
+      <td class="num ${scoreClass(p.seo_score)}">${p.seo_score}</td>
+      <td class="num ${scoreClass(p.aeo_score)}">${p.aeo_score}</td>
+      <td class="num ${scoreClass(p.geo_score)}">${p.geo_score}</td>
+      <td class="num ${scoreClass(p.tech_score)}">${p.tech_score}</td>
+    </tr>`;
+  });
+  html += `</tbody></table></div></div>`;
+
+  // Homepage detail (first page in array) as example on-screen detail
+  const home = data.pages[0];
+  if (home) {
+    html += renderChecklist(`Homepage — On-Page SEO`, home.seo_checks);
+    html += renderChecklist(`Homepage — AEO`, home.aeo_checks);
+    html += renderChecklist(`Homepage — GEO`, home.geo_checks);
+    html += renderChecklist(`Homepage — Technical`, home.tech_checks);
+  }
 
   resultsEl.innerHTML = html;
   resultsEl.style.display = 'block';

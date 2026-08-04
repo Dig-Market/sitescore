@@ -206,6 +206,174 @@ def generate_report(analysis, output_path, agency_name="Dig Market", client_name
     return output_path
 
 
+def build_score_table_4(scores, styles):
+    """scores: dict with keys overall, seo, aeo, geo, tech"""
+    def score_para(score):
+        color = _score_color(score)
+        return Paragraph(f'<font color="{color.hexval()}">{score}</font>', ParagraphStyle(
+            name='ScoreBig4', fontSize=28, leading=32, alignment=TA_CENTER, fontName='Helvetica-Bold'
+        ))
+    labels = ['OVERALL', 'SEO', 'AEO', 'GEO', 'TECHNICAL']
+    keys = ['overall', 'seo', 'aeo', 'geo', 'tech']
+    data = [
+        [score_para(scores[k]) for k in keys],
+        [Paragraph(l, styles['ScoreLabel']) for l in labels],
+    ]
+    col_width = 1.26 * inch
+    t = Table(data, colWidths=[col_width] * 5)
+    t.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), LIGHT_GREY),
+        ('BOX', (0, 0), (-1, -1), 0.5, HexColor('#dddddd')),
+        ('INNERGRID', (0, 0), (-1, -1), 0.5, HexColor('#dddddd')),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('TOPPADDING', (0, 0), (-1, 0), 12),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 2),
+        ('TOPPADDING', (0, 1), (-1, 1), 0),
+        ('BOTTOMPADDING', (0, 1), (-1, 1), 12),
+    ]))
+    return t
+
+
+def build_simple_check_table(checks, styles):
+    """Same as build_checks_table but usable standalone for site-wide checks."""
+    return build_checks_table(checks, styles)
+
+
+def build_pages_summary_table(pages, styles):
+    cell_style = ParagraphStyle(name='PageCell', fontSize=8.5, textColor=HexColor('#222222'), leading=11)
+    header_style = ParagraphStyle(name='PageHeader', fontSize=8.5, textColor=HexColor('#ffffff'), fontName='Helvetica-Bold')
+
+    rows = [[
+        Paragraph('Page URL', header_style),
+        Paragraph('SEO', header_style),
+        Paragraph('AEO', header_style),
+        Paragraph('GEO', header_style),
+        Paragraph('Tech', header_style),
+    ]]
+    for p in pages:
+        url_display = p['url']
+        if len(url_display) > 55:
+            url_display = url_display[:52] + '...'
+        rows.append([
+            Paragraph(url_display, cell_style),
+            Paragraph(str(p['seo_score']), cell_style),
+            Paragraph(str(p['aeo_score']), cell_style),
+            Paragraph(str(p['geo_score']), cell_style),
+            Paragraph(str(p['tech_score']), cell_style),
+        ])
+
+    t = Table(rows, colWidths=[3.9*inch, 0.65*inch, 0.65*inch, 0.65*inch, 0.65*inch], repeatRows=1)
+    t.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), PRIMARY),
+        ('GRID', (0, 0), (-1, -1), 0.5, HexColor('#dddddd')),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('ALIGN', (1, 0), (-1, -1), 'CENTER'),
+        ('TOPPADDING', (0, 0), (-1, -1), 5),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+        ('LEFTPADDING', (0, 0), (-1, -1), 6),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [HexColor('#ffffff'), LIGHT_GREY]),
+    ]))
+    return t
+
+
+def generate_site_report(crawl_result, output_path, agency_name="Dig Market", client_name=None):
+    """
+    crawl_result: dict returned by SiteCrawler.crawl()
+    Generates a multi-page site-wide audit report.
+    """
+    styles = build_styles()
+    doc = SimpleDocTemplate(
+        output_path, pagesize=letter,
+        topMargin=0.6*inch, bottomMargin=0.6*inch,
+        leftMargin=0.6*inch, rightMargin=0.6*inch
+    )
+    story = []
+
+    # Header
+    story.append(Paragraph(f'{agency_name}', ParagraphStyle(
+        name='Brand', fontSize=12, textColor=ACCENT, fontName='Helvetica-Bold'
+    )))
+    story.append(Paragraph('Site-Wide SEO, AEO & GEO Audit', styles['ReportTitle']))
+    subtitle = f"{crawl_result['url']} — {crawl_result['pages_crawled']} pages crawled"
+    if client_name:
+        subtitle = f'Prepared for {client_name} — {subtitle}'
+    story.append(Paragraph(subtitle, styles['ReportSubtitle']))
+    story.append(Paragraph(
+        f"Generated on {datetime.now().strftime('%B %d, %Y')}",
+        ParagraphStyle(name='Date', fontSize=9, textColor=TEXT_GREY)
+    ))
+    story.append(Spacer(1, 20))
+
+    scores = {
+        'overall': crawl_result['overall_score'],
+        'seo': crawl_result['seo_score'],
+        'aeo': crawl_result['aeo_score'],
+        'geo': crawl_result['geo_score'],
+        'tech': crawl_result['tech_score'],
+    }
+    story.append(build_score_table_4(scores, styles))
+    story.append(Spacer(1, 10))
+    story.append(Paragraph(
+        'This report averages scores across every crawled page and checks site-wide '
+        'factors: SEO (on-page ranking fundamentals), AEO (readiness to be cited by AI '
+        'answer engines like ChatGPT and Perplexity), GEO (accessibility to generative '
+        'AI crawlers), and Technical health (mobile-friendliness, speed, crawlability).',
+        styles['Normal']
+    ))
+
+    story.append(Spacer(1, 16))
+    story.append(Paragraph('Site-Wide Technical Checks', styles['SectionHeading']))
+    story.append(build_simple_check_table(crawl_result['site_technical_checks'], styles))
+
+    story.append(Spacer(1, 16))
+    story.append(Paragraph('Cross-Page Issues', styles['SectionHeading']))
+    story.append(build_simple_check_table(crawl_result['site_wide_issues'], styles))
+
+    story.append(PageBreak())
+    story.append(Paragraph('Per-Page Score Breakdown', styles['SectionHeading']))
+    story.append(Paragraph(
+        f"Scores for each of the {crawl_result['pages_crawled']} pages crawled. "
+        'Use this to spot which specific pages need the most attention.',
+        styles['Normal']
+    ))
+    story.append(Spacer(1, 10))
+    story.append(build_pages_summary_table(crawl_result['pages'], styles))
+
+    # Detail pages: show full checks for homepage + any page scoring under 60 overall
+    detail_pages = [crawl_result['pages'][0]]
+    for p in crawl_result['pages'][1:]:
+        avg_score = round((p['seo_score'] + p['aeo_score'] + p['geo_score'] + p['tech_score']) / 4)
+        if avg_score < 60:
+            detail_pages.append(p)
+
+    for p in detail_pages[:6]:  # cap detail pages to keep report reasonable
+        story.append(PageBreak())
+        story.append(Paragraph(f"Page Detail: {p['url']}", styles['SectionHeading']))
+        story.append(Spacer(1, 6))
+        story.append(Paragraph('SEO Checks', ParagraphStyle(name='SubHead', fontSize=11, fontName='Helvetica-Bold', spaceBefore=8, spaceAfter=4)))
+        story.append(build_checks_table(p['seo_checks'], styles))
+        story.append(Spacer(1, 10))
+        story.append(Paragraph('AEO Checks', ParagraphStyle(name='SubHead2', fontSize=11, fontName='Helvetica-Bold', spaceBefore=8, spaceAfter=4)))
+        story.append(build_checks_table(p['aeo_checks'], styles))
+        story.append(Spacer(1, 10))
+        story.append(Paragraph('GEO Checks', ParagraphStyle(name='SubHead3', fontSize=11, fontName='Helvetica-Bold', spaceBefore=8, spaceAfter=4)))
+        story.append(build_checks_table(p['geo_checks'], styles))
+        story.append(Spacer(1, 10))
+        story.append(Paragraph('Technical Checks', ParagraphStyle(name='SubHead4', fontSize=11, fontName='Helvetica-Bold', spaceBefore=8, spaceAfter=4)))
+        story.append(build_checks_table(p['tech_checks'], styles))
+
+    story.append(Spacer(1, 20))
+    story.append(Paragraph(
+        f'Report generated by {agency_name} — SiteScore Analysis Tool',
+        ParagraphStyle(name='Footer', fontSize=8, textColor=TEXT_GREY, alignment=TA_CENTER)
+    ))
+
+    doc.build(story)
+    return output_path
+
+
 if __name__ == '__main__':
     # quick manual test
     from analyzer import SiteAnalyzer

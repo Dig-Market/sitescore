@@ -5,9 +5,10 @@ Fetches a webpage and computes:
 2. AEO Score (0-100) - AI Answer Engine Optimization factors (ChatGPT/Perplexity/AI Overviews readiness)
 """
 import re
+import time
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse, urljoin, urldefrag
 
 
 class SiteAnalyzer:
@@ -20,11 +21,14 @@ class SiteAnalyzer:
         self.html = None
         self.status_code = None
         self.load_error = None
+        self.elapsed = None
 
     def fetch(self):
         try:
             headers = {'User-Agent': 'Mozilla/5.0 (compatible; SiteScoreBot/1.0)'}
-            resp = requests.get(self.url, headers=headers, timeout=15)
+            start = time.time()
+            resp = requests.get(self.url, headers=headers, timeout=10)
+            self.elapsed = time.time() - start
             self.status_code = resp.status_code
             self.html = resp.text
             self.soup = BeautifulSoup(self.html, 'lxml')
@@ -239,6 +243,86 @@ class SiteAnalyzer:
             self.check_summary_snippet(),
         ]
 
+    # ---------------- GEO CHECKS (Generative Engine Optimization) ----------------
+    # GEO overlaps with AEO but focuses specifically on whether AI crawlers can
+    # access and are being invited to use the content (as opposed to whether the
+    # content itself is well-structured for extraction, which AEO covers).
+
+    def check_semantic_html(self):
+        semantic_tags = ['article', 'section', 'main', 'nav', 'header', 'footer']
+        found = [t for t in semantic_tags if self.soup.find(t)]
+        return {
+            'name': 'Semantic HTML5 Structure',
+            'value': f'{len(found)}/6 semantic tags used ({", ".join(found) if found else "none"})',
+            'pass': len(found) >= 3,
+            'detail': 'Semantic tags (article, section, main) help AI parsers identify the actual content vs. navigation/boilerplate' if len(found) >= 3 else 'Page relies on generic <div> structure — AI crawlers work better with semantic HTML5 tags'
+        }
+
+    def check_content_to_code_ratio(self):
+        if not self.html:
+            return {'name': 'Content-to-Code Ratio', 'value': 'N/A', 'pass': False, 'detail': 'Could not measure'}
+        text_len = len(self.soup.get_text(strip=True))
+        html_len = len(self.html)
+        ratio = (text_len / html_len * 100) if html_len else 0
+        return {
+            'name': 'Content-to-Code Ratio',
+            'value': f'{ratio:.1f}% text vs markup',
+            'pass': ratio >= 10,
+            'detail': 'Healthy ratio of readable content to HTML markup' if ratio >= 10 else 'Too much markup relative to content — heavy scripts/divs can bury content from AI extractors'
+        }
+
+    def check_meta_robots_ai(self):
+        tag = self.soup.find('meta', attrs={'name': 'robots'})
+        content = tag.get('content', '').lower() if tag else ''
+        blocked = 'noindex' in content
+        return {
+            'name': 'Meta Robots (AI Indexing)',
+            'value': content or 'Not set (default: indexable)',
+            'pass': not blocked,
+            'detail': 'Page is indexable by AI crawlers' if not blocked else 'This page has a noindex tag — AI engines and Google will not index or cite it'
+        }
+
+    def run_geo_checks(self):
+        return [
+            self.check_semantic_html(),
+            self.check_content_to_code_ratio(),
+            self.check_meta_robots_ai(),
+        ]
+
+    # ---------------- PAGE-LEVEL TECHNICAL CHECKS ----------------
+
+    def check_viewport(self):
+        tag = self.soup.find('meta', attrs={'name': 'viewport'})
+        return {
+            'name': 'Mobile Viewport Tag',
+            'value': tag.get('content', '') if tag else 'Missing',
+            'pass': bool(tag),
+            'detail': 'Page is configured for mobile responsiveness' if tag else 'No viewport meta tag — page may not display correctly on mobile, hurting mobile rankings'
+        }
+
+    def check_page_weight(self):
+        size_kb = len(self.html.encode('utf-8')) / 1024 if self.html else 0
+        return {
+            'name': 'Page Size',
+            'value': f'{size_kb:.0f} KB (HTML)',
+            'pass': size_kb < 500,
+            'detail': 'Reasonable page weight' if size_kb < 500 else 'Large HTML payload — can slow down load times and hurt Core Web Vitals'
+        }
+
+    def check_response_time(self, elapsed_seconds):
+        return {
+            'name': 'Server Response Time',
+            'value': f'{elapsed_seconds:.2f}s',
+            'pass': elapsed_seconds < 1.5,
+            'detail': 'Fast server response' if elapsed_seconds < 1.5 else 'Slow server response — this directly impacts Core Web Vitals and rankings'
+        }
+
+    def run_technical_page_checks(self, elapsed_seconds=None):
+        checks = [self.check_viewport(), self.check_page_weight()]
+        if elapsed_seconds is not None:
+            checks.append(self.check_response_time(elapsed_seconds))
+        return checks
+
     # ---------------- SCORING ----------------
 
     @staticmethod
@@ -254,19 +338,249 @@ class SiteAnalyzer:
 
         seo_checks = self.run_seo_checks()
         aeo_checks = self.run_aeo_checks()
+        geo_checks = self.run_geo_checks()
+        tech_checks = self.run_technical_page_checks(self.elapsed)
 
         seo_score = self.score_from_checks(seo_checks)
         aeo_score = self.score_from_checks(aeo_checks)
-        overall_score = round((seo_score + aeo_score) / 2)
+        geo_score = self.score_from_checks(geo_checks)
+        tech_score = self.score_from_checks(tech_checks)
+        overall_score = round((seo_score + aeo_score + geo_score + tech_score) / 4)
+
+        # collect internal links found on this page (used by the crawler)
+        internal_links = set()
+        for a in self.soup.find_all('a', href=True):
+            href = a['href']
+            absolute = urljoin(self.url, href)
+            absolute, _ = urldefrag(absolute)
+            if urlparse(absolute).netloc == self.domain:
+                internal_links.add(absolute)
 
         return {
             'url': self.url,
             'domain': self.domain,
             'seo_score': seo_score,
             'aeo_score': aeo_score,
+            'geo_score': geo_score,
+            'tech_score': tech_score,
             'overall_score': overall_score,
             'seo_checks': seo_checks,
             'aeo_checks': aeo_checks,
+            'geo_checks': geo_checks,
+            'tech_checks': tech_checks,
+            'title': (self.soup.find('title').get_text().strip() if self.soup.find('title') else ''),
+            'internal_links': internal_links,
+        }
+
+
+class SiteCrawler:
+    """
+    Crawls a website starting from a given URL, discovering internal pages
+    via links, and runs the full SEO+AEO+GEO+Technical audit on each page.
+    Also runs site-wide checks: robots.txt, sitemap.xml, llms.txt, and
+    cross-page duplicate title/meta detection.
+    """
+    def __init__(self, start_url, max_pages=15):
+        if not start_url.startswith(('http://', 'https://')):
+            start_url = 'https://' + start_url
+        self.start_url = start_url
+        self.domain = urlparse(start_url).netloc
+        self.scheme = urlparse(start_url).scheme
+        self.max_pages = max_pages
+        self.headers = {'User-Agent': 'Mozilla/5.0 (compatible; SiteScoreBot/1.0)'}
+
+    def _base(self):
+        return f'{self.scheme}://{self.domain}'
+
+    def check_robots_txt(self):
+        url = urljoin(self._base(), '/robots.txt')
+        try:
+            resp = requests.get(url, headers=self.headers, timeout=10)
+            if resp.status_code != 200:
+                return {
+                    'name': 'robots.txt',
+                    'value': f'Not found (status {resp.status_code})',
+                    'pass': False,
+                    'detail': 'No robots.txt found — search engines and AI crawlers assume full access by default, but a robots.txt is standard practice for crawl control'
+                }, resp.text if resp.status_code == 200 else ''
+            body = resp.text
+            ai_bots = ['GPTBot', 'ClaudeBot', 'PerplexityBot', 'Google-Extended']
+            blocked = []
+            lower = body.lower()
+            for bot in ai_bots:
+                # crude check: bot named with a Disallow: / right after it
+                if bot.lower() in lower:
+                    section = lower.split(bot.lower())[1][:200]
+                    if 'disallow: /' in section and 'disallow: /\n' not in section.replace(' ', ''):
+                        pass
+                    if re.search(r'disallow:\s*/\s*($|\n)', section):
+                        blocked.append(bot)
+            return {
+                'name': 'robots.txt',
+                'value': f'Found. AI bots blocked: {", ".join(blocked) if blocked else "none detected"}',
+                'pass': len(blocked) == 0,
+                'detail': 'robots.txt allows AI crawlers to access the site' if not blocked else f'robots.txt appears to block AI crawlers ({", ".join(blocked)}) — this prevents citation by tools like ChatGPT and Perplexity'
+            }, body
+        except Exception as e:
+            return {
+                'name': 'robots.txt',
+                'value': f'Could not fetch ({e})',
+                'pass': False,
+                'detail': 'Could not verify robots.txt'
+            }, ''
+
+    def check_sitemap(self, robots_body):
+        candidates = ['/sitemap.xml', '/sitemap_index.xml']
+        if robots_body and 'sitemap:' in robots_body.lower():
+            for line in robots_body.splitlines():
+                if line.lower().startswith('sitemap:'):
+                    candidates.insert(0, line.split(':', 1)[1].strip())
+        for c in candidates:
+            url = c if c.startswith('http') else urljoin(self._base(), c)
+            try:
+                resp = requests.get(url, headers=self.headers, timeout=10)
+                if resp.status_code == 200 and ('<urlset' in resp.text or '<sitemapindex' in resp.text):
+                    return {
+                        'name': 'XML Sitemap',
+                        'value': f'Found at {url}',
+                        'pass': True,
+                        'detail': 'Sitemap helps search engines and AI crawlers discover all pages'
+                    }
+            except Exception:
+                continue
+        return {
+            'name': 'XML Sitemap',
+            'value': 'Not found',
+            'pass': False,
+            'detail': 'No XML sitemap found — this makes it harder for crawlers to discover and index all pages on the site'
+        }
+
+    def check_llms_txt(self):
+        url = urljoin(self._base(), '/llms.txt')
+        try:
+            resp = requests.get(url, headers=self.headers, timeout=8)
+            found = resp.status_code == 200
+        except Exception:
+            found = False
+        return {
+            'name': 'llms.txt (AI content guide)',
+            'value': 'Found' if found else 'Not found',
+            'pass': found,
+            'detail': 'llms.txt gives AI models a curated guide to your site content — an emerging standard for AI discoverability' if found else 'No llms.txt file — this is an emerging (optional but increasingly recommended) standard that helps AI models understand site structure. Not yet widespread, so low priority.'
+        }
+
+    def discover_links(self, homepage_analysis):
+        to_visit = list(homepage_analysis.get('internal_links', []))
+        # prioritize likely-useful pages, skip obvious junk (files, anchors already stripped)
+        skip_ext = ('.jpg', '.jpeg', '.png', '.gif', '.pdf', '.zip', '.svg', '.css', '.js', '.xml', '.mp4')
+        clean = [u for u in to_visit if not u.lower().endswith(skip_ext)]
+        return clean
+
+    def crawl(self):
+        results = {'error': None}
+
+        # Site-wide technical checks first
+        robots_check, robots_body = self.check_robots_txt()
+        sitemap_check = self.check_sitemap(robots_body)
+        llms_check = self.check_llms_txt()
+        site_technical_checks = [robots_check, sitemap_check, llms_check]
+
+        # Homepage
+        homepage = SiteAnalyzer(self.start_url)
+        homepage_result = homepage.analyze()
+        if 'error' in homepage_result:
+            return {'error': homepage_result['error'], 'url': self.start_url}
+
+        pages = [homepage_result]
+        visited = {self.start_url, urldefrag(self.start_url)[0]}
+
+        candidates = self.discover_links(homepage_result)
+        for link in candidates:
+            if len(pages) >= self.max_pages:
+                break
+            if link in visited:
+                continue
+            visited.add(link)
+            analyzer = SiteAnalyzer(link)
+            result = analyzer.analyze()
+            if 'error' not in result:
+                pages.append(result)
+
+        # Aggregate scores across pages
+        def avg(key):
+            vals = [p[key] for p in pages if key in p]
+            return round(sum(vals) / len(vals)) if vals else 0
+
+        seo_avg = avg('seo_score')
+        aeo_avg = avg('aeo_score')
+        geo_avg = avg('geo_score')
+        tech_page_avg = avg('tech_score')
+
+        # site-wide technical score blends page-level technical avg with site-wide checks
+        site_tech_pass = sum(1 for c in site_technical_checks if c['pass'])
+        site_tech_score = round((site_tech_pass / len(site_technical_checks)) * 100)
+        combined_tech_score = round((tech_page_avg + site_tech_score) / 2)
+
+        overall = round((seo_avg + aeo_avg + geo_avg + combined_tech_score) / 4)
+
+        # Duplicate title / meta description detection across crawled pages
+        title_map = {}
+        meta_map = {}
+        for p in pages:
+            title_check = next((c for c in p['seo_checks'] if c['name'] == 'Title Tag'), None)
+            meta_check = next((c for c in p['seo_checks'] if c['name'] == 'Meta Description'), None)
+            if title_check and title_check['value'] not in ('Missing',):
+                title_map.setdefault(title_check['value'], []).append(p['url'])
+            if meta_check and meta_check['value'] not in ('Missing',):
+                meta_map.setdefault(meta_check['value'], []).append(p['url'])
+
+        duplicate_titles = {k: v for k, v in title_map.items() if len(v) > 1}
+        duplicate_metas = {k: v for k, v in meta_map.items() if len(v) > 1}
+
+        site_wide_issues = []
+        if duplicate_titles:
+            site_wide_issues.append({
+                'name': 'Duplicate Title Tags',
+                'value': f'{len(duplicate_titles)} title(s) reused across {sum(len(v) for v in duplicate_titles.values())} pages',
+                'pass': False,
+                'detail': 'Multiple pages share the same title tag — this confuses search engines about which page to rank for a query'
+            })
+        else:
+            site_wide_issues.append({
+                'name': 'Duplicate Title Tags',
+                'value': 'None found',
+                'pass': True,
+                'detail': 'Each crawled page has a unique title tag'
+            })
+        if duplicate_metas:
+            site_wide_issues.append({
+                'name': 'Duplicate Meta Descriptions',
+                'value': f'{len(duplicate_metas)} description(s) reused across {sum(len(v) for v in duplicate_metas.values())} pages',
+                'pass': False,
+                'detail': 'Multiple pages share the same meta description — reduces click-through rate differentiation in search results'
+            })
+        else:
+            site_wide_issues.append({
+                'name': 'Duplicate Meta Descriptions',
+                'value': 'None found',
+                'pass': True,
+                'detail': 'Each crawled page has a unique meta description'
+            })
+
+        return {
+            'url': self.start_url,
+            'domain': self.domain,
+            'pages_crawled': len(pages),
+            'seo_score': seo_avg,
+            'aeo_score': aeo_avg,
+            'geo_score': geo_avg,
+            'tech_score': combined_tech_score,
+            'overall_score': overall,
+            'site_technical_checks': site_technical_checks,
+            'site_wide_issues': site_wide_issues,
+            'duplicate_titles': duplicate_titles,
+            'duplicate_metas': duplicate_metas,
+            'pages': pages,
         }
 
 
