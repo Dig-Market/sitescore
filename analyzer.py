@@ -27,7 +27,11 @@ class SiteAnalyzer:
 
     def fetch(self):
         try:
-            headers = {'User-Agent': 'Mozilla/5.0 (compatible; SiteScoreBot/1.0)'}
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+            }
             start = time.time()
             resp = requests.get(self.url, headers=headers, timeout=10)
             self.elapsed = time.time() - start
@@ -422,7 +426,11 @@ class SiteCrawler:
         self.domain = urlparse(start_url).netloc
         self.scheme = urlparse(start_url).scheme
         self.max_pages = max_pages
-        self.headers = {'User-Agent': 'Mozilla/5.0 (compatible; SiteScoreBot/1.0)'}
+        self.headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+            }
 
     def _base(self):
         return f'{self.scheme}://{self.domain}'
@@ -621,7 +629,10 @@ class SiteCrawler:
         homepage = SiteAnalyzer(self.start_url)
         homepage_result = homepage.analyze()
         if 'error' in homepage_result:
-            return {'error': homepage_result['error'], 'url': self.start_url}
+            err = homepage_result['error']
+            if 'status 403' in err or 'status 406' in err:
+                err += ' — this site may be blocking automated tools (bot protection/firewall). Try again, or this site may need to be checked manually.'
+            return {'error': err, 'url': self.start_url}
 
         pages = [homepage_result]
         visited = {self.start_url, urldefrag(self.start_url)[0]}
