@@ -275,8 +275,8 @@
       </div>
     </div>
     <div class="field">
-      <label for="max_pages">Pages to Crawl (max 20)</label>
-      <input type="number" id="max_pages" name="max_pages" value="12" min="1" max="20">
+      <label for="max_pages">Pages to Crawl (max 30)</label>
+      <input type="number" id="max_pages" name="max_pages" value="15" min="1" max="30">
     </div>
     <button type="submit" class="btn" id="submitBtn">Run Full Site Audit</button>
   </form>
@@ -303,32 +303,77 @@ function scoreClass(score) {
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
   statusEl.className = 'status';
-  statusEl.textContent = 'Crawling site and running checks — this can take a minute for multiple pages...';
+  statusEl.textContent = 'Starting audit...';
   resultsEl.style.display = 'none';
   submitBtn.disabled = true;
   submitBtn.textContent = 'Scanning site...';
 
   const formData = new FormData(form);
   try {
-    const res = await fetch('/analyze', { method: 'POST', body: formData });
-    const data = await res.json();
+    const startRes = await fetch('/analyze', { method: 'POST', body: formData });
+    const startData = await startRes.json();
 
-    if (!res.ok) {
+    if (!startRes.ok || !startData.job_id) {
       statusEl.className = 'status error';
-      statusEl.textContent = data.error || 'Something went wrong.';
+      statusEl.textContent = startData.error || 'Could not start the audit.';
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Run Full Site Audit';
       return;
     }
 
-    statusEl.textContent = '';
-    renderResults(data);
+    pollJob(startData.job_id);
   } catch (err) {
     statusEl.className = 'status error';
     statusEl.textContent = 'Network error — please try again.';
-  } finally {
     submitBtn.disabled = false;
     submitBtn.textContent = 'Run Full Site Audit';
   }
 });
+
+let pollCount = 0;
+const pollMessages = [
+  'Crawling pages...',
+  'Checking SEO, AEO, GEO and technical signals...',
+  'Running speed diagnostics...',
+  'Checking for broken links...',
+  'Almost done, compiling report...',
+];
+
+async function pollJob(jobId) {
+  pollCount++;
+  statusEl.className = 'status';
+  statusEl.textContent = pollMessages[Math.min(pollCount - 1, pollMessages.length - 1)];
+
+  try {
+    const res = await fetch(`/status/${jobId}`);
+    const data = await res.json();
+
+    if (data.status === 'done') {
+      statusEl.textContent = '';
+      renderResults(data.result);
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Run Full Site Audit';
+      pollCount = 0;
+      return;
+    }
+    if (data.status === 'error') {
+      statusEl.className = 'status error';
+      statusEl.textContent = data.error || 'Something went wrong.';
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Run Full Site Audit';
+      pollCount = 0;
+      return;
+    }
+    // still running — poll again
+    setTimeout(() => pollJob(jobId), 2500);
+  } catch (err) {
+    statusEl.className = 'status error';
+    statusEl.textContent = 'Lost connection while checking progress — please try again.';
+    submitBtn.disabled = false;
+    submitBtn.textContent = 'Run Full Site Audit';
+    pollCount = 0;
+  }
+}
 
 function renderChecklist(title, checks) {
   let html = `<div class="checklist"><h3>${title}</h3>`;
