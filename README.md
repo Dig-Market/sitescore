@@ -10,6 +10,13 @@ Enter a homepage URL, the tool discovers and crawls internal pages automatically
 
 **Not included:** off-page/backlink analysis. That requires a paid data source (Ahrefs/SEMrush/Moz API) since backlink data isn't present on the website itself — see "Adding backlink data" below if you want to wire this in later.
 
+## What's new in this version
+
+- **Full detail per page** — every crawled page gets its own "Issues Found + How to Fix" list (not just the homepage), both on-screen and in the PDF.
+- **Exact image file names** flagged for missing alt text and non-descriptive names (e.g. `IMG_2837.jpg`), so you know exactly which image to fix.
+- **Broken internal links** — checks a sample of internal links for 404s/errors and lists the exact broken URL.
+- **Real speed diagnostics** via Google PageSpeed Insights (free, no signup needed for light use) — actual Core Web Vitals plus specific slow-down causes (render-blocking resources, unoptimized images, unminified CSS/JS, etc.). Run on the homepage only, since a full Lighthouse test per page would make multi-page crawls too slow.
+
 ---
 
 ## Project structure

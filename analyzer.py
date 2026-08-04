@@ -86,13 +86,26 @@ class SiteAnalyzer:
     def check_images_alt(self):
         imgs = self.soup.find_all('img')
         total = len(imgs)
-        missing = sum(1 for i in imgs if not i.get('alt', '').strip())
+        missing_imgs = []
+        for i in imgs:
+            if not i.get('alt', '').strip():
+                src = i.get('src', 'unknown-source')
+                # resolve to absolute-ish for display, keep it short
+                fname = src.split('/')[-1].split('?')[0] if src else 'unknown'
+                missing_imgs.append(fname or src)
+        missing = len(missing_imgs)
         pct_ok = (total - missing) / total * 100 if total else 100
+        detail = f'{missing} image(s) missing alt attributes'
+        if missing_imgs:
+            shown = missing_imgs[:8]
+            more = f' (+{missing - len(shown)} more)' if missing > len(shown) else ''
+            detail += ': ' + ', '.join(shown) + more + '. Add descriptive alt text to each (e.g. alt="red leather office chair" not alt="img123").'
         return {
             'name': 'Image Alt Text',
             'value': f'{total - missing}/{total} images have alt text' if total else 'No images found',
             'pass': pct_ok >= 80,
-            'detail': f'{missing} image(s) missing alt attributes'
+            'detail': detail,
+            'items': missing_imgs[:20],
         }
 
     def check_word_count(self):
@@ -137,6 +150,23 @@ class SiteAnalyzer:
             'detail': 'Canonical tag present' if tag else 'No canonical tag — risk of duplicate content issues'
         }
 
+    def check_image_filenames(self):
+        imgs = self.soup.find_all('img')
+        bad_names = []
+        generic_patterns = re.compile(r'^(img|image|dsc|photo|pic|untitled)[\-_]?\d*\.', re.IGNORECASE)
+        for i in imgs:
+            src = i.get('src', '')
+            fname = src.split('/')[-1].split('?')[0] if src else ''
+            if fname and (generic_patterns.match(fname) or re.match(r'^[a-f0-9]{8,}\.', fname, re.IGNORECASE)):
+                bad_names.append(fname)
+        return {
+            'name': 'Image File Names',
+            'value': f'{len(bad_names)} non-descriptive file name(s) found' if bad_names else 'File names look descriptive',
+            'pass': len(bad_names) == 0,
+            'detail': ('Rename these to describe the image content for SEO (e.g. "black-leather-recliner-chair.jpg" instead of "IMG_2837.jpg"): ' + ', '.join(bad_names[:8]) + (f' (+{len(bad_names)-8} more)' if len(bad_names) > 8 else '')) if bad_names else 'Image file names are descriptive rather than generic camera/CMS defaults',
+            'items': bad_names[:20],
+        }
+
     def run_seo_checks(self):
         return [
             self.check_title(),
@@ -144,6 +174,7 @@ class SiteAnalyzer:
             self.check_h1(),
             self.check_heading_structure(),
             self.check_images_alt(),
+            self.check_image_filenames(),
             self.check_word_count(),
             self.check_internal_links(),
             self.check_https(),
@@ -335,6 +366,8 @@ class SiteAnalyzer:
     def analyze(self):
         if not self.fetch():
             return {'error': self.load_error, 'url': self.url}
+        if self.status_code and self.status_code >= 400:
+            return {'error': f'Page returned status {self.status_code}', 'url': self.url}
 
         seo_checks = self.run_seo_checks()
         aeo_checks = self.run_aeo_checks()
@@ -469,6 +502,92 @@ class SiteCrawler:
             'detail': 'llms.txt gives AI models a curated guide to your site content — an emerging standard for AI discoverability' if found else 'No llms.txt file — this is an emerging (optional but increasingly recommended) standard that helps AI models understand site structure. Not yet widespread, so low priority.'
         }
 
+    def check_broken_links(self, all_links, max_check=40):
+        """Checks a capped sample of unique internal links found across the crawl for broken (4xx/5xx) responses."""
+        unique_links = list(dict.fromkeys(all_links))[:max_check]
+        broken = []
+        for link in unique_links:
+            try:
+                resp = requests.head(link, headers=self.headers, timeout=6, allow_redirects=True)
+                if resp.status_code >= 400:
+                    # some servers don't support HEAD properly, double check with GET
+                    resp2 = requests.get(link, headers=self.headers, timeout=6)
+                    if resp2.status_code >= 400:
+                        broken.append((link, resp2.status_code))
+                    continue
+            except Exception:
+                broken.append((link, 'unreachable'))
+        checked_count = len(unique_links)
+        if broken:
+            items = [f'{url} ({code})' for url, code in broken[:15]]
+            return {
+                'name': 'Broken Internal Links',
+                'value': f'{len(broken)} broken link(s) found (checked {checked_count})',
+                'pass': False,
+                'detail': 'Fix or remove these links — broken links waste crawl budget and hurt user experience: ' + '; '.join(items[:8]) + (f' (+{len(broken)-8} more)' if len(broken) > 8 else ''),
+                'items': items,
+            }
+        return {
+            'name': 'Broken Internal Links',
+            'value': f'None found (checked {checked_count} links)',
+            'pass': True,
+            'detail': 'No broken internal links detected in the sample checked'
+        }
+
+    def fetch_pagespeed(self, url, strategy='mobile'):
+        """
+        Calls Google PageSpeed Insights (free public API) for real Core Web Vitals
+        and specific speed-optimization opportunities. No API key required for
+        light usage, but rate limits are low — used sparingly (homepage only by default).
+        """
+        api_url = 'https://www.googleapis.com/pagespeedonline/v5/runPagespeed'
+        params = {'url': url, 'strategy': strategy, 'category': 'performance'}
+        try:
+            resp = requests.get(api_url, params=params, timeout=45)
+            if resp.status_code != 200:
+                return {'error': f'PageSpeed API returned status {resp.status_code}'}
+            data = resp.json()
+            lighthouse = data.get('lighthouseResult', {})
+            perf_score = lighthouse.get('categories', {}).get('performance', {}).get('score')
+            audits = lighthouse.get('audits', {})
+
+            metrics = {}
+            for key, label in [
+                ('largest-contentful-paint', 'Largest Contentful Paint'),
+                ('first-contentful-paint', 'First Contentful Paint'),
+                ('total-blocking-time', 'Total Blocking Time'),
+                ('cumulative-layout-shift', 'Cumulative Layout Shift'),
+                ('speed-index', 'Speed Index'),
+            ]:
+                a = audits.get(key, {})
+                if a:
+                    metrics[label] = a.get('displayValue', 'N/A')
+
+            opportunity_keys = [
+                'render-blocking-resources', 'uses-optimized-images', 'unminified-css',
+                'unminified-javascript', 'uses-text-compression', 'uses-responsive-images',
+                'offscreen-images', 'unused-css-rules', 'unused-javascript',
+                'efficient-animated-content', 'uses-long-cache-ttl', 'total-byte-weight',
+            ]
+            opportunities = []
+            for key in opportunity_keys:
+                a = audits.get(key)
+                if a and a.get('score') is not None and a.get('score') < 0.9:
+                    savings = a.get('displayValue', '')
+                    opportunities.append({
+                        'title': a.get('title', key),
+                        'savings': savings,
+                        'description': a.get('description', '').split('. ')[0] + '.' if a.get('description') else '',
+                    })
+
+            return {
+                'performance_score': round(perf_score * 100) if perf_score is not None else None,
+                'metrics': metrics,
+                'opportunities': opportunities,
+            }
+        except Exception as e:
+            return {'error': str(e)}
+
     def discover_links(self, homepage_analysis):
         to_visit = list(homepage_analysis.get('internal_links', []))
         # prioritize likely-useful pages, skip obvious junk (files, anchors already stripped)
@@ -515,6 +634,17 @@ class SiteCrawler:
         aeo_avg = avg('aeo_score')
         geo_avg = avg('geo_score')
         tech_page_avg = avg('tech_score')
+
+        # Broken link check across all internal links discovered site-wide
+        all_links_seen = set()
+        for p in pages:
+            all_links_seen.update(p.get('internal_links', []))
+        broken_links_check = self.check_broken_links(list(all_links_seen))
+        site_technical_checks.append(broken_links_check)
+
+        # Real speed diagnostics (Google PageSpeed Insights) — homepage only,
+        # since a full Lighthouse run per page would make multi-page audits too slow.
+        pagespeed = self.fetch_pagespeed(self.start_url)
 
         # site-wide technical score blends page-level technical avg with site-wide checks
         site_tech_pass = sum(1 for c in site_technical_checks if c['pass'])
@@ -580,6 +710,7 @@ class SiteCrawler:
             'site_wide_issues': site_wide_issues,
             'duplicate_titles': duplicate_titles,
             'duplicate_metas': duplicate_metas,
+            'pagespeed': pagespeed,
             'pages': pages,
         }
 

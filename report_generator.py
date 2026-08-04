@@ -117,6 +117,95 @@ def build_checks_table(checks, styles):
     return t
 
 
+def build_issues_table(checks, styles):
+    """
+    Ubersuggest-style 'action items' table: shows ONLY failing checks with
+    the specific fix instructions (the 'detail' text), which includes exact
+    file names / URLs where available. Passing checks are omitted here since
+    the goal is a fix-it list, not a full audit trail.
+    """
+    failed = [c for c in checks if not c['pass']]
+    if not failed:
+        return Paragraph('No issues found on this page. All checks passed.', ParagraphStyle(
+            name='AllGood', fontSize=10, textColor=ACCENT, fontName='Helvetica-Bold'
+        ))
+
+    name_style = ParagraphStyle(name='IssueName', fontSize=9.5, fontName='Helvetica-Bold', textColor=HexColor('#1a1a2e'), leading=12)
+    fix_style = ParagraphStyle(name='IssueFix', fontSize=8.5, textColor=TEXT_GREY, leading=11)
+
+    rows = [[Paragraph('Issue', ParagraphStyle(name='H1', fontSize=9, textColor=HexColor('#ffffff'), fontName='Helvetica-Bold')),
+             Paragraph('How to fix it', ParagraphStyle(name='H2', fontSize=9, textColor=HexColor('#ffffff'), fontName='Helvetica-Bold'))]]
+    for c in failed:
+        rows.append([
+            Paragraph(c['name'], name_style),
+            Paragraph(c['detail'], fix_style),
+        ])
+
+    t = Table(rows, colWidths=[1.6*inch, 5.0*inch], repeatRows=1)
+    t.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), WARN),
+        ('GRID', (0, 0), (-1, -1), 0.5, HexColor('#dddddd')),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('TOPPADDING', (0, 0), (-1, -1), 7),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 7),
+        ('LEFTPADDING', (0, 0), (-1, -1), 6),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [HexColor('#ffffff'), HexColor('#fff8f7')]),
+    ]))
+    return t
+
+
+def build_pagespeed_section(pagespeed, styles):
+    if not pagespeed or pagespeed.get('error'):
+        return [Paragraph(
+            'Speed diagnostics could not be retrieved for this page (the checker may be temporarily rate-limited — this does not affect the other scores).',
+            ParagraphStyle(name='PSErr', fontSize=9, textColor=TEXT_GREY)
+        )]
+
+    elements = []
+    score = pagespeed.get('performance_score')
+    if score is not None:
+        color = _score_color(score)
+        elements.append(Paragraph(
+            f'Google PageSpeed Performance Score: <font color="{color.hexval()}"><b>{score}/100</b></font> (mobile)',
+            ParagraphStyle(name='PSScore', fontSize=11, spaceAfter=8)
+        ))
+
+    metrics = pagespeed.get('metrics', {})
+    if metrics:
+        cell_style = ParagraphStyle(name='MetricCell', fontSize=9, textColor=HexColor('#222222'))
+        header_style = ParagraphStyle(name='MetricHeader', fontSize=9, textColor=HexColor('#ffffff'), fontName='Helvetica-Bold')
+        rows = [[Paragraph('Metric', header_style), Paragraph('Value', header_style)]]
+        for k, v in metrics.items():
+            rows.append([Paragraph(k, cell_style), Paragraph(str(v), cell_style)])
+        t = Table(rows, colWidths=[3.3*inch, 3.3*inch])
+        t.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), PRIMARY),
+            ('GRID', (0, 0), (-1, -1), 0.5, HexColor('#dddddd')),
+            ('TOPPADDING', (0, 0), (-1, -1), 5),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+            ('LEFTPADDING', (0, 0), (-1, -1), 6),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [HexColor('#ffffff'), LIGHT_GREY]),
+        ]))
+        elements.append(t)
+        elements.append(Spacer(1, 10))
+
+    opportunities = pagespeed.get('opportunities', [])
+    if opportunities:
+        elements.append(Paragraph('Specific things slowing this page down:', ParagraphStyle(
+            name='OppHead', fontSize=10, fontName='Helvetica-Bold', spaceBefore=4, spaceAfter=6
+        )))
+        for o in opportunities:
+            text = f"<b>{o['title']}</b>"
+            if o.get('savings'):
+                text += f" — potential savings: {o['savings']}"
+            elements.append(Paragraph(text, ParagraphStyle(name='OppItem', fontSize=9, leading=13, spaceAfter=4, leftIndent=8)))
+    elif score is not None:
+        elements.append(Paragraph('No major speed issues detected.', ParagraphStyle(name='OppNone', fontSize=9, textColor=ACCENT)))
+
+    return elements
+
+
 def build_recommendations(checks, styles):
     failed = [c for c in checks if not c['pass']]
     if not failed:
@@ -327,9 +416,25 @@ def generate_site_report(crawl_result, output_path, agency_name="Dig Market", cl
     story.append(Paragraph('Site-Wide Technical Checks', styles['SectionHeading']))
     story.append(build_simple_check_table(crawl_result['site_technical_checks'], styles))
 
+    # Full detail for broken links (URLs get truncated in the table above)
+    broken_check = next((c for c in crawl_result['site_technical_checks'] if c['name'] == 'Broken Internal Links'), None)
+    if broken_check and not broken_check['pass'] and broken_check.get('items'):
+        story.append(Spacer(1, 8))
+        story.append(Paragraph('Broken links found:', ParagraphStyle(name='BrokenHead', fontSize=10, fontName='Helvetica-Bold', spaceAfter=4)))
+        for item in broken_check['items']:
+            story.append(Paragraph(f'• {item}', ParagraphStyle(name='BrokenItem', fontSize=9, textColor=WARN, leftIndent=10, spaceAfter=2)))
+
     story.append(Spacer(1, 16))
     story.append(Paragraph('Cross-Page Issues', styles['SectionHeading']))
     story.append(build_simple_check_table(crawl_result['site_wide_issues'], styles))
+
+    if crawl_result.get('duplicate_titles'):
+        story.append(Spacer(1, 8))
+        story.append(Paragraph('Pages sharing the same title tag:', ParagraphStyle(name='DupHead', fontSize=10, fontName='Helvetica-Bold', spaceAfter=4)))
+        for title, urls in crawl_result['duplicate_titles'].items():
+            story.append(Paragraph(f'"{title}"', ParagraphStyle(name='DupTitle', fontSize=9, fontName='Helvetica-Bold', leftIndent=10, spaceBefore=4)))
+            for u in urls:
+                story.append(Paragraph(f'• {u}', ParagraphStyle(name='DupUrl', fontSize=8.5, textColor=TEXT_GREY, leftIndent=18, spaceAfter=1)))
 
     story.append(PageBreak())
     story.append(Paragraph('Per-Page Score Breakdown', styles['SectionHeading']))
@@ -341,28 +446,26 @@ def generate_site_report(crawl_result, output_path, agency_name="Dig Market", cl
     story.append(Spacer(1, 10))
     story.append(build_pages_summary_table(crawl_result['pages'], styles))
 
-    # Detail pages: show full checks for homepage + any page scoring under 60 overall
-    detail_pages = [crawl_result['pages'][0]]
-    for p in crawl_result['pages'][1:]:
-        avg_score = round((p['seo_score'] + p['aeo_score'] + p['geo_score'] + p['tech_score']) / 4)
-        if avg_score < 60:
-            detail_pages.append(p)
+    # Speed diagnostics (homepage only — full Lighthouse run is too slow to run per-page)
+    story.append(PageBreak())
+    story.append(Paragraph('Speed Diagnostics (Homepage)', styles['SectionHeading']))
+    story.append(Paragraph(
+        'Real-world speed test via Google PageSpeed Insights. Run on the homepage only — '
+        'a full test on every page would make multi-page audits take too long.',
+        styles['Normal']
+    ))
+    story.append(Spacer(1, 10))
+    story.extend(build_pagespeed_section(crawl_result.get('pagespeed'), styles))
 
-    for p in detail_pages[:6]:  # cap detail pages to keep report reasonable
+    # Full "issues + fixes" detail for every crawled page
+    for p in crawl_result['pages']:
         story.append(PageBreak())
-        story.append(Paragraph(f"Page Detail: {p['url']}", styles['SectionHeading']))
+        story.append(Paragraph(f"Issues Found: {p['url']}", styles['SectionHeading']))
         story.append(Spacer(1, 6))
-        story.append(Paragraph('SEO Checks', ParagraphStyle(name='SubHead', fontSize=11, fontName='Helvetica-Bold', spaceBefore=8, spaceAfter=4)))
-        story.append(build_checks_table(p['seo_checks'], styles))
+
+        all_checks = p['seo_checks'] + p['aeo_checks'] + p['geo_checks'] + p['tech_checks']
+        story.append(build_issues_table(all_checks, styles))
         story.append(Spacer(1, 10))
-        story.append(Paragraph('AEO Checks', ParagraphStyle(name='SubHead2', fontSize=11, fontName='Helvetica-Bold', spaceBefore=8, spaceAfter=4)))
-        story.append(build_checks_table(p['aeo_checks'], styles))
-        story.append(Spacer(1, 10))
-        story.append(Paragraph('GEO Checks', ParagraphStyle(name='SubHead3', fontSize=11, fontName='Helvetica-Bold', spaceBefore=8, spaceAfter=4)))
-        story.append(build_checks_table(p['geo_checks'], styles))
-        story.append(Spacer(1, 10))
-        story.append(Paragraph('Technical Checks', ParagraphStyle(name='SubHead4', fontSize=11, fontName='Helvetica-Bold', spaceBefore=8, spaceAfter=4)))
-        story.append(build_checks_table(p['tech_checks'], styles))
 
     story.append(Spacer(1, 20))
     story.append(Paragraph(

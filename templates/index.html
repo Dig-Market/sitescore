@@ -348,6 +348,46 @@ function renderChecklist(title, checks) {
   return html;
 }
 
+function renderIssuesList(title, checks) {
+  const failed = checks.filter(c => !c.pass);
+  let html = `<div class="checklist"><h3>${title}</h3>`;
+  if (failed.length === 0) {
+    html += `<div class="check-item"><div class="cname pass">No issues found — all checks passed.</div></div>`;
+  } else {
+    failed.forEach(c => {
+      html += `
+        <div class="check-item" style="display:block;">
+          <div class="cname">${c.name}</div>
+          <div class="cval">${c.detail}</div>
+        </div>`;
+    });
+  }
+  html += `</div>`;
+  return html;
+}
+
+function renderPageSpeed(ps) {
+  if (!ps || ps.error) {
+    return `<div class="checklist"><h3>Speed Diagnostics (Homepage)</h3>
+      <div class="check-item"><div class="cval">Speed diagnostics unavailable right now (rate-limited or temporary error) — doesn't affect other scores.</div></div></div>`;
+  }
+  let html = `<div class="checklist"><h3>Speed Diagnostics (Homepage) — Google PageSpeed</h3>`;
+  if (ps.performance_score !== null && ps.performance_score !== undefined) {
+    const cls = scoreClass(ps.performance_score);
+    html += `<div class="check-item"><div class="cname">Performance Score</div><div class="check-status ${cls}">${ps.performance_score}/100</div></div>`;
+  }
+  if (ps.opportunities && ps.opportunities.length) {
+    ps.opportunities.forEach(o => {
+      html += `<div class="check-item" style="display:block;">
+        <div class="cname">${o.title}</div>
+        <div class="cval">${o.savings ? 'Potential savings: ' + o.savings : ''}</div>
+      </div>`;
+    });
+  }
+  html += `</div>`;
+  return html;
+}
+
 function renderResults(data) {
   let html = `
     <div class="scorebar">
@@ -362,6 +402,7 @@ function renderResults(data) {
 
   html += renderChecklist('Site-Wide Technical Checks', data.site_technical_checks);
   html += renderChecklist('Cross-Page Issues', data.site_wide_issues);
+  html += renderPageSpeed(data.pagespeed);
 
   // Per-page table
   html += `<div class="checklist"><h3>Per-Page Scores (${data.pages.length} pages crawled)</h3>
@@ -380,14 +421,11 @@ function renderResults(data) {
   });
   html += `</tbody></table></div></div>`;
 
-  // Homepage detail (first page in array) as example on-screen detail
-  const home = data.pages[0];
-  if (home) {
-    html += renderChecklist(`Homepage — On-Page SEO`, home.seo_checks);
-    html += renderChecklist(`Homepage — AEO`, home.aeo_checks);
-    html += renderChecklist(`Homepage — GEO`, home.geo_checks);
-    html += renderChecklist(`Homepage — Technical`, home.tech_checks);
-  }
+  // Issues + fixes for every crawled page
+  data.pages.forEach(p => {
+    const allChecks = [...p.seo_checks, ...p.aeo_checks, ...p.geo_checks, ...p.tech_checks];
+    html += renderIssuesList(`Issues Found — ${p.url}`, allChecks);
+  });
 
   resultsEl.innerHTML = html;
   resultsEl.style.display = 'block';
