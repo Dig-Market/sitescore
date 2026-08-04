@@ -28,7 +28,7 @@ def analyze():
         max_pages = int(request.form.get('max_pages', 15))
     except ValueError:
         max_pages = 15
-    max_pages = max(1, min(max_pages, 30))  # hard cap to keep request times reasonable
+    max_pages = max(1, min(max_pages, 20))  # hard cap to keep request times reasonable
 
     if not url:
         return jsonify({'error': 'Please enter a URL'}), 400

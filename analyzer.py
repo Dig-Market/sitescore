@@ -438,7 +438,7 @@ class SiteCrawler:
     def check_robots_txt(self):
         url = urljoin(self._base(), '/robots.txt')
         try:
-            resp = requests.get(url, headers=self.headers, timeout=10)
+            resp = requests.get(url, headers=self.headers, timeout=6)
             if resp.status_code != 200:
                 return {
                     'name': 'robots.txt',
@@ -481,7 +481,7 @@ class SiteCrawler:
         for c in candidates:
             url = c if c.startswith('http') else urljoin(self._base(), c)
             try:
-                resp = requests.get(url, headers=self.headers, timeout=10)
+                resp = requests.get(url, headers=self.headers, timeout=6)
                 if resp.status_code == 200 and ('<urlset' in resp.text or '<sitemapindex' in resp.text):
                     return {
                         'name': 'XML Sitemap',
@@ -501,7 +501,7 @@ class SiteCrawler:
     def check_llms_txt(self):
         url = urljoin(self._base(), '/llms.txt')
         try:
-            resp = requests.get(url, headers=self.headers, timeout=8)
+            resp = requests.get(url, headers=self.headers, timeout=5)
             found = resp.status_code == 200
         except Exception:
             found = False
@@ -634,6 +634,12 @@ class SiteCrawler:
                 err += ' — this site may be blocking automated tools (bot protection/firewall). Try again, or this site may need to be checked manually.'
             return {'error': err, 'url': self.start_url}
 
+        # Kick off the PageSpeed test in the background now — it can take 20-45s,
+        # so we run it concurrently with the rest of the crawl instead of after it,
+        # to stay under Render's ~100s request time limit.
+        pagespeed_executor = ThreadPoolExecutor(max_workers=1)
+        pagespeed_future = pagespeed_executor.submit(self.fetch_pagespeed, self.start_url)
+
         pages = [homepage_result]
         visited = {self.start_url, urldefrag(self.start_url)[0]}
 
@@ -649,7 +655,7 @@ class SiteCrawler:
 
         # Fetch remaining pages in parallel to stay within request time limits
         if to_fetch:
-            with ThreadPoolExecutor(max_workers=8) as executor:
+            with ThreadPoolExecutor(max_workers=10) as executor:
                 futures = {executor.submit(lambda u: SiteAnalyzer(u).analyze(), link): link for link in to_fetch}
                 for future in as_completed(futures):
                     try:
@@ -673,12 +679,16 @@ class SiteCrawler:
         all_links_seen = set()
         for p in pages:
             all_links_seen.update(p.get('internal_links', []))
-        broken_links_check = self.check_broken_links(list(all_links_seen))
+        broken_links_check = self.check_broken_links(list(all_links_seen), max_check=15)
         site_technical_checks.append(broken_links_check)
 
-        # Real speed diagnostics (Google PageSpeed Insights) — homepage only,
-        # since a full Lighthouse run per page would make multi-page audits too slow.
-        pagespeed = self.fetch_pagespeed(self.start_url)
+        # By now the PageSpeed test has likely finished (it ran in parallel with
+        # everything above); wait briefly for it, but don't let it block forever.
+        try:
+            pagespeed = pagespeed_future.result(timeout=20)
+        except Exception:
+            pagespeed = {'error': 'PageSpeed check timed out'}
+        pagespeed_executor.shutdown(wait=False)
 
         # site-wide technical score blends page-level technical avg with site-wide checks
         site_tech_pass = sum(1 for c in site_technical_checks if c['pass'])
