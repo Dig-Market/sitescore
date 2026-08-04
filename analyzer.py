@@ -9,6 +9,7 @@ import time
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, urljoin, urldefrag
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 class SiteAnalyzer:
@@ -502,21 +503,28 @@ class SiteCrawler:
             'detail': 'llms.txt gives AI models a curated guide to your site content — an emerging standard for AI discoverability' if found else 'No llms.txt file — this is an emerging (optional but increasingly recommended) standard that helps AI models understand site structure. Not yet widespread, so low priority.'
         }
 
-    def check_broken_links(self, all_links, max_check=40):
-        """Checks a capped sample of unique internal links found across the crawl for broken (4xx/5xx) responses."""
+    def check_broken_links(self, all_links, max_check=25):
+        """Checks a capped sample of unique internal links found across the crawl for broken (4xx/5xx) responses. Runs in parallel to stay fast."""
         unique_links = list(dict.fromkeys(all_links))[:max_check]
         broken = []
-        for link in unique_links:
+
+        def check_one(link):
             try:
-                resp = requests.head(link, headers=self.headers, timeout=6, allow_redirects=True)
+                resp = requests.head(link, headers=self.headers, timeout=5, allow_redirects=True)
                 if resp.status_code >= 400:
-                    # some servers don't support HEAD properly, double check with GET
-                    resp2 = requests.get(link, headers=self.headers, timeout=6)
+                    resp2 = requests.get(link, headers=self.headers, timeout=5)
                     if resp2.status_code >= 400:
-                        broken.append((link, resp2.status_code))
-                    continue
+                        return (link, resp2.status_code)
+                return None
             except Exception:
-                broken.append((link, 'unreachable'))
+                return (link, 'unreachable')
+
+        if unique_links:
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                for result in executor.map(check_one, unique_links):
+                    if result:
+                        broken.append(result)
+
         checked_count = len(unique_links)
         if broken:
             items = [f'{url} ({code})' for url, code in broken[:15]]
@@ -614,16 +622,26 @@ class SiteCrawler:
         visited = {self.start_url, urldefrag(self.start_url)[0]}
 
         candidates = self.discover_links(homepage_result)
+        to_fetch = []
         for link in candidates:
-            if len(pages) >= self.max_pages:
+            if len(to_fetch) + len(pages) >= self.max_pages:
                 break
             if link in visited:
                 continue
             visited.add(link)
-            analyzer = SiteAnalyzer(link)
-            result = analyzer.analyze()
-            if 'error' not in result:
-                pages.append(result)
+            to_fetch.append(link)
+
+        # Fetch remaining pages in parallel to stay within request time limits
+        if to_fetch:
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                futures = {executor.submit(lambda u: SiteAnalyzer(u).analyze(), link): link for link in to_fetch}
+                for future in as_completed(futures):
+                    try:
+                        result = future.result()
+                        if 'error' not in result:
+                            pages.append(result)
+                    except Exception:
+                        continue
 
         # Aggregate scores across pages
         def avg(key):
