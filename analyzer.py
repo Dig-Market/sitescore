@@ -6,6 +6,7 @@ Fetches a webpage and computes:
 """
 import re
 import time
+import os
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, urljoin, urldefrag
@@ -544,12 +545,16 @@ class SiteCrawler:
 
     def fetch_pagespeed(self, url, strategy='mobile'):
         """
-        Calls Google PageSpeed Insights (free public API) for real Core Web Vitals
-        and specific speed-optimization opportunities. No API key required for
-        light usage, but rate limits are low — used sparingly (homepage only by default).
+        Calls Google PageSpeed Insights for real Core Web Vitals and specific
+        speed-optimization opportunities. Uses PAGESPEED_API_KEY env var if set
+        (free from Google Cloud Console) for a much higher rate limit; falls
+        back to unauthenticated calls otherwise, which are heavily rate-limited.
         """
         api_url = 'https://www.googleapis.com/pagespeedonline/v5/runPagespeed'
         params = {'url': url, 'strategy': strategy, 'category': 'performance'}
+        api_key = os.environ.get('PAGESPEED_API_KEY')
+        if api_key:
+            params['key'] = api_key
         try:
             resp = requests.get(api_url, params=params, timeout=45)
             if resp.status_code != 200:
