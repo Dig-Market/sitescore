@@ -178,6 +178,50 @@
   .pagetable th { background: var(--panel); color: #fff; font-family: 'IBM Plex Mono', monospace; font-size: 11px; text-transform: uppercase; }
   .pagetable td.num { text-align: center; font-family: 'IBM Plex Mono', monospace; }
   .pagetable td.url { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .accordion-item {
+    background: #fff;
+    border: 1px solid #e4e2d8;
+    border-radius: 8px;
+    margin-bottom: 8px;
+    overflow: hidden;
+  }
+  .accordion-header {
+    width: 100%;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 14px 18px;
+    background: #fff;
+    border: none;
+    cursor: pointer;
+    font-family: 'Inter', sans-serif;
+    font-size: 13.5px;
+    text-align: left;
+  }
+  .accordion-header:hover { background: var(--paper); }
+  .accordion-header .acc-url { color: var(--ink); font-weight: 500; word-break: break-all; padding-right: 12px; }
+  .accordion-header .acc-count {
+    flex-shrink: 0;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    color: var(--red);
+    background: #fdeeed;
+    padding: 3px 8px;
+    border-radius: 10px;
+  }
+  .accordion-header::after {
+    content: '+';
+    margin-left: 10px;
+    font-size: 18px;
+    color: var(--muted);
+    flex-shrink: 0;
+  }
+  .accordion-header.open::after { content: '−'; }
+  .accordion-body {
+    border-top: 1px solid #eeede5;
+    padding: 4px 18px;
+  }
   .scorecell .lbl {
     font-family: 'IBM Plex Mono', monospace;
     font-size: 10px;
@@ -275,8 +319,8 @@
       </div>
     </div>
     <div class="field">
-      <label for="max_pages">Pages to Crawl (max 30)</label>
-      <input type="number" id="max_pages" name="max_pages" value="15" min="1" max="30">
+      <label for="max_pages">Pages to Crawl (max 500)</label>
+      <input type="number" id="max_pages" name="max_pages" value="15" min="1" max="500">
     </div>
     <button type="submit" class="btn" id="submitBtn">Run Full Site Audit</button>
   </form>
@@ -342,7 +386,6 @@ const pollMessages = [
 async function pollJob(jobId) {
   pollCount++;
   statusEl.className = 'status';
-  statusEl.textContent = pollMessages[Math.min(pollCount - 1, pollMessages.length - 1)];
 
   try {
     const res = await fetch(`/status/${jobId}`);
@@ -364,8 +407,16 @@ async function pollJob(jobId) {
       pollCount = 0;
       return;
     }
-    // still running — poll again
-    setTimeout(() => pollJob(jobId), 2500);
+
+    // still running — show live progress if available
+    if (data.stage) {
+      statusEl.textContent = data.stage;
+    } else if (data.pages_target && data.pages_target > 0) {
+      statusEl.textContent = `Crawled ${data.pages_done || 0} of up to ${data.pages_target} pages...`;
+    } else {
+      statusEl.textContent = pollMessages[Math.min(pollCount - 1, pollMessages.length - 1)];
+    }
+    setTimeout(() => pollJob(jobId), 2000);
   } catch (err) {
     statusEl.className = 'status error';
     statusEl.textContent = 'Lost connection while checking progress — please try again.';
@@ -393,22 +444,58 @@ function renderChecklist(title, checks) {
   return html;
 }
 
-function renderIssuesList(title, checks) {
-  const failed = checks.filter(c => !c.pass);
-  let html = `<div class="checklist"><h3>${title}</h3>`;
-  if (failed.length === 0) {
-    html += `<div class="check-item"><div class="cname pass">No issues found — all checks passed.</div></div>`;
-  } else {
-    failed.forEach(c => {
-      html += `
-        <div class="check-item" style="display:block;">
-          <div class="cname">${c.name}</div>
-          <div class="cval">${c.detail}</div>
-        </div>`;
-    });
+function renderIssuesAccordion(pages) {
+  const withIssues = pages
+    .map(p => {
+      const allChecks = [...p.seo_checks, ...p.aeo_checks, ...p.geo_checks, ...p.tech_checks];
+      const failed = allChecks.filter(c => !c.pass);
+      return { page: p, failed };
+    })
+    .filter(x => x.failed.length > 0);
+
+  const cleanCount = pages.length - withIssues.length;
+
+  let html = `<div class="checklist"><h3>Pages With Issues (${withIssues.length} of ${pages.length})</h3>`;
+  if (cleanCount > 0) {
+    html += `<div class="check-item"><div class="cval pass">${cleanCount} page(s) had no issues and aren't shown below.</div></div>`;
+  }
+  if (withIssues.length === 0) {
+    html += `<div class="check-item"><div class="cval pass">No issues found on any crawled page.</div></div>`;
   }
   html += `</div>`;
+
+  withIssues.forEach((x, i) => {
+    const accId = `acc-${i}`;
+    html += `
+      <div class="accordion-item">
+        <button class="accordion-header" onclick="toggleAccordion('${accId}')">
+          <span class="acc-url">${x.page.url}</span>
+          <span class="acc-count">${x.failed.length} issue${x.failed.length > 1 ? 's' : ''}</span>
+        </button>
+        <div class="accordion-body" id="${accId}" style="display:none;">`;
+    x.failed.forEach(c => {
+      html += `
+          <div class="check-item" style="display:block;">
+            <div class="cname">${c.name}</div>
+            <div class="cval">${c.detail}</div>
+          </div>`;
+    });
+    html += `</div></div>`;
+  });
+
   return html;
+}
+
+function toggleAccordion(id) {
+  const el = document.getElementById(id);
+  const btn = el.previousElementSibling;
+  if (el.style.display === 'none') {
+    el.style.display = 'block';
+    btn.classList.add('open');
+  } else {
+    el.style.display = 'none';
+    btn.classList.remove('open');
+  }
 }
 
 function renderPageSpeed(ps) {
@@ -466,11 +553,9 @@ function renderResults(data) {
   });
   html += `</tbody></table></div></div>`;
 
-  // Issues + fixes for every crawled page
-  data.pages.forEach(p => {
-    const allChecks = [...p.seo_checks, ...p.aeo_checks, ...p.geo_checks, ...p.tech_checks];
-    html += renderIssuesList(`Issues Found — ${p.url}`, allChecks);
-  });
+  // Issues + fixes — click a page to expand its specific issues (pages with
+  // zero issues are omitted from this list entirely)
+  html += renderIssuesAccordion(data.pages);
 
   resultsEl.innerHTML = html;
   resultsEl.style.display = 'block';

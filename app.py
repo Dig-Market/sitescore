@@ -34,14 +34,24 @@ def _cleanup_old_jobs():
 
 def run_audit_job(job_id, url, agency_name, client_name, max_pages):
     try:
+        def on_progress(pages_done, pages_target):
+            with JOBS_LOCK:
+                if job_id in JOBS:
+                    JOBS[job_id]['pages_done'] = pages_done
+                    JOBS[job_id]['pages_target'] = pages_target
+
         crawler = SiteCrawler(url, max_pages=max_pages)
-        result = crawler.crawl()
+        result = crawler.crawl(progress_callback=on_progress)
 
         if result.get('error'):
             with JOBS_LOCK:
                 JOBS[job_id]['status'] = 'error'
                 JOBS[job_id]['error'] = f"Couldn't load that site: {result['error']}"
             return
+
+        with JOBS_LOCK:
+            if job_id in JOBS:
+                JOBS[job_id]['stage'] = 'Generating PDF report...'
 
         filename = f"sitescore_{uuid.uuid4().hex[:8]}.pdf"
         filepath = os.path.join(REPORTS_DIR, filename)
@@ -77,14 +87,18 @@ def analyze():
         max_pages = int(request.form.get('max_pages', 15))
     except ValueError:
         max_pages = 15
-    max_pages = max(1, min(max_pages, 30))
+    max_pages = max(1, min(max_pages, 500))
 
     if not url:
         return jsonify({'error': 'Please enter a URL'}), 400
 
     job_id = uuid.uuid4().hex
     with JOBS_LOCK:
-        JOBS[job_id] = {'status': 'running', 'result': None, 'error': None, 'created_at': time.time()}
+        JOBS[job_id] = {
+            'status': 'running', 'result': None, 'error': None,
+            'created_at': time.time(), 'pages_done': 0, 'pages_target': max_pages,
+            'stage': None,
+        }
 
     thread = threading.Thread(
         target=run_audit_job,
@@ -107,7 +121,12 @@ def status(job_id):
         return jsonify({'status': 'error', 'error': job['error']})
     if job['status'] == 'done':
         return jsonify({'status': 'done', 'result': job['result']})
-    return jsonify({'status': 'running'})
+    return jsonify({
+        'status': 'running',
+        'pages_done': job.get('pages_done', 0),
+        'pages_target': job.get('pages_target', 0),
+        'stage': job.get('stage'),
+    })
 
 
 @app.route('/download/<filename>')

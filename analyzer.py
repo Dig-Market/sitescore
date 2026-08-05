@@ -529,7 +529,7 @@ class SiteCrawler:
                 return (link, 'unreachable')
 
         if unique_links:
-            with ThreadPoolExecutor(max_workers=10) as executor:
+            with ThreadPoolExecutor(max_workers=20) as executor:
                 for result in executor.map(check_one, unique_links):
                     if result:
                         broken.append(result)
@@ -609,16 +609,16 @@ class SiteCrawler:
         except Exception as e:
             return {'error': str(e)}
 
-    def discover_links(self, homepage_analysis):
-        to_visit = list(homepage_analysis.get('internal_links', []))
-        # prioritize likely-useful pages, skip obvious junk (files, anchors already stripped)
-        skip_ext = ('.jpg', '.jpeg', '.png', '.gif', '.pdf', '.zip', '.svg', '.css', '.js', '.xml', '.mp4')
-        clean = [u for u in to_visit if not u.lower().endswith(skip_ext)]
-        return clean
+    def discover_links(self, analysis):
+        internal_links = analysis.get('internal_links', []) if analysis else []
+        skip_ext = ('.jpg', '.jpeg', '.png', '.gif', '.pdf', '.zip', '.svg', '.css', '.js', '.xml', '.mp4', '.webp', '.ico')
+        return [u for u in internal_links if not u.lower().endswith(skip_ext)]
 
-    def crawl(self):
-        results = {'error': None}
-
+    def crawl(self, progress_callback=None):
+        """
+        progress_callback(pages_done, pages_target): called periodically during
+        the crawl so the caller (a background job) can report live progress.
+        """
         # Site-wide technical checks first
         robots_check, robots_body = self.check_robots_txt()
         sitemap_check = self.check_sitemap(robots_body)
@@ -635,35 +635,49 @@ class SiteCrawler:
             return {'error': err, 'url': self.start_url}
 
         # Kick off the PageSpeed test in the background now — it can take 20-45s,
-        # so we run it concurrently with the rest of the crawl instead of after it,
-        # to stay under Render's ~100s request time limit.
+        # so it runs concurrently with the rest of the crawl instead of after it.
         pagespeed_executor = ThreadPoolExecutor(max_workers=1)
         pagespeed_future = pagespeed_executor.submit(self.fetch_pagespeed, self.start_url)
 
         pages = [homepage_result]
         visited = {self.start_url, urldefrag(self.start_url)[0]}
+        queue = list(self.discover_links(homepage_result))
+        if progress_callback:
+            progress_callback(len(pages), self.max_pages)
 
-        candidates = self.discover_links(homepage_result)
-        to_fetch = []
-        for link in candidates:
-            if len(to_fetch) + len(pages) >= self.max_pages:
+        # BFS crawl in parallel batches: fetch a batch of not-yet-visited links,
+        # collect the new links found on those pages, repeat until we hit
+        # max_pages or run out of new links to follow. This is what lets the
+        # crawler reach pages that are only linked from deeper pages (e.g. a
+        # 500-page product catalog), not just links on the homepage.
+        workers = 20 if self.max_pages > 50 else 10
+        while queue and len(pages) < self.max_pages:
+            batch = []
+            while queue and len(batch) < workers and (len(pages) + len(batch)) < self.max_pages:
+                link = queue.pop(0)
+                if link in visited:
+                    continue
+                visited.add(link)
+                batch.append(link)
+
+            if not batch:
                 break
-            if link in visited:
-                continue
-            visited.add(link)
-            to_fetch.append(link)
 
-        # Fetch remaining pages in parallel to stay within request time limits
-        if to_fetch:
-            with ThreadPoolExecutor(max_workers=10) as executor:
-                futures = {executor.submit(lambda u: SiteAnalyzer(u).analyze(), link): link for link in to_fetch}
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = {executor.submit(lambda u: SiteAnalyzer(u).analyze(), link): link for link in batch}
                 for future in as_completed(futures):
                     try:
                         result = future.result()
                         if 'error' not in result:
                             pages.append(result)
+                            for new_link in self.discover_links(result):
+                                if new_link not in visited:
+                                    queue.append(new_link)
                     except Exception:
                         continue
+
+            if progress_callback:
+                progress_callback(len(pages), self.max_pages)
 
         # Aggregate scores across pages
         def avg(key):
@@ -679,7 +693,8 @@ class SiteCrawler:
         all_links_seen = set()
         for p in pages:
             all_links_seen.update(p.get('internal_links', []))
-        broken_links_check = self.check_broken_links(list(all_links_seen), max_check=15)
+        broken_check_limit = min(100, max(15, self.max_pages))
+        broken_links_check = self.check_broken_links(list(all_links_seen), max_check=broken_check_limit)
         site_technical_checks.append(broken_links_check)
 
         # By now the PageSpeed test has likely finished (it ran in parallel with

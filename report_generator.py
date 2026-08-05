@@ -457,13 +457,36 @@ def generate_site_report(crawl_result, output_path, agency_name="Dig Market", cl
     story.append(Spacer(1, 10))
     story.extend(build_pagespeed_section(crawl_result.get('pagespeed'), styles))
 
-    # Full "issues + fixes" detail for every crawled page
+    # Per-page "issues + fixes" detail. For small audits, every page gets full
+    # detail. For large audits (lots of pages), the PDF would become enormous,
+    # so we only include pages that actually have issues, capped at 60 —
+    # the live web dashboard has full click-to-expand detail for every page.
+    pages_with_issues = []
     for p in crawl_result['pages']:
+        all_checks = p['seo_checks'] + p['aeo_checks'] + p['geo_checks'] + p['tech_checks']
+        if any(not c['pass'] for c in all_checks):
+            pages_with_issues.append((p, all_checks))
+
+    detail_cap = 60
+    truncated = len(pages_with_issues) > detail_cap
+
+    story.append(PageBreak())
+    story.append(Paragraph('Per-Page Issues & Fixes', styles['SectionHeading']))
+    if len(crawl_result['pages']) > detail_cap:
+        note = (
+            f"{len(pages_with_issues)} of {len(crawl_result['pages'])} crawled pages have at least one issue. "
+        )
+        if truncated:
+            note += f"Showing the first {detail_cap} below — see the live web dashboard for every page."
+        else:
+            note += "Pages with no issues are omitted from this section."
+        story.append(Paragraph(note, styles['Normal']))
+        story.append(Spacer(1, 8))
+
+    for p, all_checks in pages_with_issues[:detail_cap]:
         story.append(PageBreak())
         story.append(Paragraph(f"Issues Found: {p['url']}", styles['SectionHeading']))
         story.append(Spacer(1, 6))
-
-        all_checks = p['seo_checks'] + p['aeo_checks'] + p['geo_checks'] + p['tech_checks']
         story.append(build_issues_table(all_checks, styles))
         story.append(Spacer(1, 10))
 
